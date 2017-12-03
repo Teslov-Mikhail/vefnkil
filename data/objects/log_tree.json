@@ -1,0 +1,9 @@
+{
+  "type": "decoration",
+  "passable": true,
+
+  "appearance": {
+    "mesh": "log_tree",
+    "texture": "log_tree.png"
+  }
+}

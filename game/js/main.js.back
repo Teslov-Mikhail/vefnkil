@@ -1,0 +1,416 @@
+document.addEventListener('contextmenu', event => event.preventDefault());
+
+var socket = io('http://wisinski.net:2137');
+
+var camera, scene, renderer, pointer;
+var geometry, material, mesh, clock;
+
+var raycaster = new THREE.Raycaster();
+var mouse = new THREE.Vector2();
+
+var players = {};
+
+var loader = new THREE.JSONLoader();
+
+init();
+animate();
+
+var map;
+
+THREE.Cache.enabled = false;
+THREE.Cache.clear();
+
+function lerp(a, b, f) {
+    return (a * (1 - f)) + (b * f);
+}
+
+// var mapString = "";
+//
+// for (var i = 0; i < 22500; i++) {
+//   mapString += 0 + ";";
+// }
+//
+// document.write(mapString);
+
+var objects = [];
+
+var MapObject = function( pos, appearance ){
+  this.meshReference;
+  this.pos = {
+    x: pos.x,
+    y: pos.y,
+    z: pos.z
+  };
+  this.loaded = false;
+  var textureUrl = "textures/"+appearance.texture;
+  this.texture = new THREE.TextureLoader().load( textureUrl );
+
+  var that = this;
+
+
+  loader.load( 'meshes/scenery/'+appearance.mesh+'.json?'+Math.random(), function ( geometry ) {
+    that.meshReference = new THREE.Mesh( geometry, new THREE.MeshLambertMaterial( {map: that.texture} ) );
+    that.meshReference.castShadow = true;
+    that.meshReference.receiveShadow = true;
+    that.meshReference.position.set( that.pos.x, that.pos.y, that.pos.z );
+
+    scene.add( that.meshReference );
+    that.loaded = true;
+  });
+}
+
+var Player = function( name, pos ){
+  this.meshReference;
+  this.mixer = new THREE.AnimationMixer( scene );
+  this.name = name;
+  this.pos = {
+    x: pos.x,
+    y: pos.y,
+    z: pos.z
+  };
+  this.oldPos = {
+    x: pos.x,
+    y: pos.y,
+    z: pos.z
+  };
+  this.moving = false;
+  this.step = 0;
+  this.loaded = false;
+
+  this.move = function(){
+    if ( !this.moving ) return;
+    if ( this.step >= 1 ) {
+      this.moving = false;
+      return;
+    }
+
+    this.meshReference.position.set(
+      lerp(this.oldPos.x, this.pos.x, this.step),
+      lerp(this.oldPos.y, this.pos.y, this.step),
+      this.pos.z
+    );
+
+    this.step += 0.07;
+
+    var raycaster = new THREE.Raycaster( new THREE.Vector3( this.pos.x, this.pos.y, this.pos.z + 15 ), new THREE.Vector3( 0, 0, -1 ), 0, 30 );
+
+    if ( map ){
+      var intersects = raycaster.intersectObject( map );
+
+      if ( intersects.length > 0 ) {
+        this.pos.z = intersects[ 0 ].point.z;
+      }
+    }
+  }
+
+  this.updatePosition = function( x, y, z ){
+    if ( !this.loaded ) return;
+
+    if( this.oldPos.x != x || this.oldPos.y != y ){
+      this.meshReference.rotation.z = Math.atan2( this.oldPos.y - y, this.oldPos.x - x ) - Math.PI / 2;
+
+      this.mixer.stopAllAction().clipAction( this.meshReference.geometry.animations[ 1 ], that.meshReference )
+      .setDuration( 0.2 )			// one second
+      .play();					// let's go
+    } else {
+      this.mixer.stopAllAction().clipAction( this.meshReference.geometry.animations[ 0 ], that.meshReference )
+      .setDuration( 1 )			// one second
+      .startAt( - Math.random() )	// random phase (already running)
+      .play();					// let's go
+    }
+
+
+    this.oldPos.x = this.pos.x;
+    this.oldPos.y = this.pos.y;
+
+    this.pos.x = x;
+    this.pos.y = y;
+    // this.pos.z = z;
+
+    this.step = 0;
+    this.moving = true;
+  }
+
+  var that = this;
+
+  loader.load( 'meshes/player.json?'+Math.random(), function ( geometry, materials ) {
+    materials.forEach(function (material) {
+      material.skinning = true;
+    });
+    that.meshReference = new THREE.SkinnedMesh( geometry, materials );
+    that.meshReference.castShadow = true;
+    scene.add( that.meshReference );
+    that.loaded = true;
+
+    that.mixer.stopAllAction().clipAction( geometry.animations[ 0 ], that.meshReference )
+    .setDuration( 1 )			// one second
+    .startAt( - Math.random() )	// random phase (already running)
+    .play();					// let's go
+  });
+
+}
+
+var myID;
+
+function init() {
+
+  socket.on('update', function (data) {
+    for (player of data.players) {
+      if ( players[ player.id ] ) {
+        players[ player.id ].updatePosition( player.x, player.y, player.z );
+      } else {
+        players[ player.id ] = new Player( player.name, {x: player.x, y: player.y, z: player.z} );
+      }
+    }
+
+    myID = socket.io.engine.id;
+  });
+  socket.on('remove', function (data) {
+    scene.remove(players[data].meshReference);
+
+
+    delete players[data];
+  });
+
+
+
+  socket.on('map', function (data){
+    let geometry = new THREE.PlaneGeometry( 150, 150, 149, 149 );
+
+    let texture = new THREE.TextureLoader().load( "textures/grass.png" );
+    texture.wrapS = THREE.RepeatWrapping;
+    texture.wrapT = THREE.RepeatWrapping;
+    texture.repeat.set( 32, 32 );
+
+    let material = new THREE.MeshPhongMaterial( {map: texture} );
+
+    var mapData = data[0].split(";");
+
+    for (var i = 0; i < geometry.vertices.length; i++) {
+      geometry.vertices[i].z = mapData[i]/3;
+    }
+
+    geometry.verticesNeedUpdate = true;
+    geometry.computeFaceNormals();
+    geometry.computeVertexNormals();
+    material.needsUpdate = true;
+
+    map = new THREE.Mesh( geometry, material );
+
+    map.receiveShadow = true; //default
+
+    scene.add( map );
+
+    var dataObjects = data[1];
+
+    for (mapObject of dataObjects) {
+      var properPosition = {
+        x: mapObject.position[0] - 75,
+        y: mapObject.position[1] - 75,
+        z: 0
+      }
+      objects.push( new MapObject( properPosition, mapObject.appearance ) );
+    }
+  });
+
+  document.onkeypress = function(e){
+    socket.emit("key", e.key);
+  }
+
+  camera = new THREE.PerspectiveCamera( 70, window.innerWidth / window.innerHeight, 0.01, 500 );
+  camera.position.z = 25;
+  camera.position.y = -25;
+  camera.rotation.x = Math.PI / 8;
+
+
+  scene = new THREE.Scene();
+
+  let texture = new THREE.TextureLoader().load( "textures/cubemaps/sky-clear.jpg" );
+
+  var geometry = new THREE.SphereGeometry( 250, 32, 32 );
+  var material = new THREE.MeshBasicMaterial( {map: texture, side: THREE.BackSide} );
+  var sphere = new THREE.Mesh( geometry, material );
+  sphere.rotation.x = -Math.PI / 2;
+  scene.add( sphere );
+
+
+
+
+  var light = new THREE.AmbientLight( 0x9c9c9c ); // soft white light
+  scene.add( light );
+
+  renderer = new THREE.WebGLRenderer( { antialias: true } );
+  renderer.setSize( window.innerWidth, window.innerHeight );
+  document.body.appendChild( renderer.domElement );
+
+  clock = new THREE.Clock();
+
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap; // default THREE.PCFShadowMap
+
+  var light = new THREE.PointLight( 0xffffff, 1, 100 );
+  light.shadow.mapSize.width = 2048;  // default
+  light.shadow.mapSize.height = 2048; // default
+  light.shadow.camera.near = 0.5;       // default
+  light.shadow.camera.far = 1024;      // default
+  light.position.set( 8, -6, 8 );
+  light.castShadow = true;
+  scene.add( light );
+
+  // var axisHelper = new THREE.AxisHelper( 5 );
+  // axisHelper.position.z = 2;
+  // scene.add( axisHelper );
+
+  // pointer = new THREE.Mesh( new THREE.BoxGeometry( 1, 1, 1 ), new THREE.MeshLambertMaterial( {color: 0xffffff} ) );
+  // scene.add(pointer);
+}
+
+var cameraRadius = 20;
+var mousePos = [ -180, -260 ];
+var mouseSpeed = 4;
+var rotation = Math.PI/2;
+
+var enableCameraRotation = false;
+
+var terrainMod = false;
+
+document.onmousedown = function(e){
+  if ( e.button === 0 ){
+    e.preventDefault();
+    socket.emit("click", tileOver);
+  }
+  if ( e.button === 2 ){
+    e.preventDefault();
+    terrainMod = true;
+    // socket.emit("mapRise", tileOver);
+  }
+  if ( e.button === 1 ){
+    e.preventDefault();
+    enableCameraRotation = true;
+  }
+}
+document.onmouseup = function(e){
+  if ( e.button === 1 ){
+    e.preventDefault();
+    enableCameraRotation = false;
+  }
+  if ( e.button === 2 ){
+    e.preventDefault();
+    terrainMod = false;
+    // socket.emit("mapRise", tileOver);
+  }
+}
+
+var mouseVector = new THREE.Vector2();
+var mouseRaycaster = new THREE.Raycaster();
+var tileOver = [];
+
+document.onmousemove = function(e) {
+
+  mouse.x = ( e.clientX / window.innerWidth ) * 2 - 1;
+	mouse.y = - ( e.clientY / window.innerHeight ) * 2 + 1;
+
+  if ( enableCameraRotation ){
+    mousePos[0]-=e.movementX;
+    mousePos[1]+=e.movementY;
+  }
+}
+
+if (document.addEventListener){
+    document.addEventListener("mousewheel", MouseWheelHandler, false);
+    document.addEventListener("DOMMouseScroll", MouseWheelHandler, false);
+} else {
+    document.attachEvent("onmousewheel", MouseWheelHandler);
+}
+
+function MouseWheelHandler(e){
+    var e = window.event || e;
+    var delta = Math.max(-1, Math.min(1, (e.wheelDelta || -e.detail)));
+
+    cameraRadius += delta;
+
+    if ( cameraRadius < 5 ) cameraRadius = 5;
+    if ( cameraRadius > 25 ) cameraRadius = 25;
+
+    return false;
+}
+
+camera.up.set( 0, 0, 1 );
+
+function setDebug( msg ){
+  document.getElementById("debug").innerHTML = msg;
+}
+
+var lastTimestamp = null;
+var fps = 0;
+
+function animate(timestamp) {
+  // fps = timestamp - lastTimestamp;
+  // lastTimestamp = timestamp;
+  // console.log(lastDelta);
+  if ( !lastTimestamp ) lastTimestamp = timestamp;
+
+  if ( timestamp - lastTimestamp < 1000  ){
+    fps += 1;
+  } else {
+    setDebug( fps );
+    fps = 0;
+    lastTimestamp = timestamp;
+  }
+
+
+  requestAnimationFrame( animate );
+
+  for (var player in players) {
+    if (players.hasOwnProperty(player)) {
+      players[player].move();
+      players[player].mixer.update( clock.getDelta() );
+    }
+  }
+
+  if( terrainMod ){
+    let i = ( tileOver[0] + 75 ) + ( -tileOver[1] + 75 ) * 150;
+
+    map.geometry.vertices[i].z += 1/3;
+
+    map.geometry.verticesNeedUpdate = true;
+    map.geometry.computeFaceNormals();
+    map.geometry.computeVertexNormals();
+    map.material.needsUpdate = true;
+  }
+
+  // update the picking ray with the camera and mouse position
+  if ( map ){
+    raycaster.setFromCamera( mouse, camera );
+
+    // calculate objects intersecting the picking ray
+    var intersects = raycaster.intersectObjects( [ map ] );
+
+    for ( var i = 0; i < intersects.length; i++ ) {
+      tileOver = [
+        Math.round(intersects[ i ].point.x),
+        Math.round(intersects[ i ].point.y)
+      ];
+      // setDebug( tileOver[0] + ", " + tileOver[1] );
+      // pointer.position.set( tileOver[0]+0.5, tileOver[1]-0.5, 0 );
+    }
+  }
+
+  if ( myID && players[ myID ].loaded && mousePos ){
+    camera.position.set(
+      players[ myID ].meshReference.position.x+cameraRadius*Math.sin(mousePos[1]/innerHeight*mouseSpeed)*Math.sin(mousePos[0]/innerWidth*mouseSpeed),
+      players[ myID ].meshReference.position.y+cameraRadius*Math.sin(mousePos[1]/innerHeight*mouseSpeed)*Math.cos(mousePos[0]/innerWidth*mouseSpeed),
+      players[ myID ].meshReference.position.z+cameraRadius*Math.cos(mousePos[1]/innerHeight*mouseSpeed)
+    );
+    let lookAtPos = new THREE.Vector3(
+      players[ myID ].meshReference.position.x,
+      players[ myID ].meshReference.position.y,
+      players[ myID ].meshReference.position.z + 1
+    );
+    camera.lookAt( lookAtPos );
+  }
+
+
+  renderer.render( scene, camera );
+
+}

@@ -1,0 +1,9 @@
+{
+  "type": "container",
+  "passable": false,
+
+  "appearance": {
+    "mesh": "crate_1m",
+    "texture": "planks.png"
+  }
+}
